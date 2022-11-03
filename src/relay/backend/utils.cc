@@ -29,6 +29,8 @@
 #include <tvm/relay/qnn/transform.h>
 #include <tvm/runtime/ndarray.h>
 
+constexpr char kDelim[] = ";";
+
 namespace tvm {
 namespace relay {
 namespace backend {
@@ -206,29 +208,40 @@ ExecutorCodegenMetadata::ExecutorCodegenMetadata(
 
 TVM_REGISTER_NODE_TYPE(ExecutorCodegenMetadataNode);
 
-Array<Pass> GetPassPrefix(bool is_homogeneous, bool is_vm) {
+Array<Pass> GetPassPrefix(bool is_homogeneous, bool is_vm, const String& deny_pass_names) {
+  LOG(INFO) << "TEST: deny_pass_names: " << deny_pass_names;
+  std::string pass_names_str = deny_pass_names.operator std::string();
+  auto deny_passes = StringSplit(pass_names_str, kDelim);
+
   Array<Pass> pass_seqs;
   // TODO(mbs): Would be nice to get spans on all diagnostics, but since they arg forgotton
   // by most passes there's little utility in including this now. Plus we'd need to only do
   // this if there's no existing spans to work from.
   // pass_seqs.push_back(parser::AnnotateSpans());
   Array<runtime::String> entry_functions{"main"};
-  pass_seqs.push_back(transform::RemoveUnusedFunctions(entry_functions));
-  pass_seqs.push_back(transform::ToBasicBlockNormalForm());
+  if (!deny_passes.count("RemoveUnusedFunctions"))
+    pass_seqs.push_back(transform::RemoveUnusedFunctions(entry_functions));
+  if (!deny_passes.count("ToBasicBlockNormalForm"))
+    pass_seqs.push_back(transform::ToBasicBlockNormalForm());
   // Run all dialect legalization passes.
-  pass_seqs.push_back(relay::qnn::transform::Legalize());
+  if (!deny_passes.count("QnnLegalize"))
+    pass_seqs.push_back(relay::qnn::transform::Legalize());
 
   // Legalize pass is restricted to homogeneous execution for now.
   if (is_homogeneous) {
-    pass_seqs.push_back(transform::Legalize());
+    if (!deny_passes.count("Legalize"))
+      pass_seqs.push_back(transform::Legalize());
   }
 
-  pass_seqs.push_back(transform::SimplifyInference());
+  if (!deny_passes.count("SimplifyInference"))
+    pass_seqs.push_back(transform::SimplifyInference());
 
   if (is_vm) {
     // eta expand to support constructors in argument position
-    pass_seqs.push_back(transform::EtaExpand(
+    if (!deny_passes.count("EtaExpand")) {
+      pass_seqs.push_back(transform::EtaExpand(
         /* expand_constructor */ true, /* expand_global_var */ false));
+    }
   }
 
   PackedFunc fskip = PackedFunc([](TVMArgs args, TVMRetValue* rv) {
@@ -244,28 +257,43 @@ Array<Pass> GetPassPrefix(bool is_homogeneous, bool is_vm) {
     }
     *rv = false;
   });
-  pass_seqs.push_back(transform::EliminateCommonSubexpr(fskip));
-  pass_seqs.push_back(transform::CombineParallelConv2D(3));
-  pass_seqs.push_back(transform::CombineParallelDense(3));
-  pass_seqs.push_back(transform::CombineParallelBatchMatmul(3));
-  pass_seqs.push_back(transform::FoldConstant());
-  pass_seqs.push_back(transform::FoldScaleAxis());
-  pass_seqs.push_back(transform::SimplifyExpr());
-  pass_seqs.push_back(transform::CanonicalizeCast());
-  pass_seqs.push_back(transform::CanonicalizeOps());
-  pass_seqs.push_back(transform::FlattenAtrousConv());
+  if (!deny_passes.count("EliminateCommonSubexpr"))
+    pass_seqs.push_back(transform::EliminateCommonSubexpr(fskip));
+  if (!deny_passes.count("CombineParallelConv2D"))
+    pass_seqs.push_back(transform::CombineParallelConv2D(3));
+  if (!deny_passes.count("CombineParallelDense"))
+    pass_seqs.push_back(transform::CombineParallelDense(3));
+  if (!deny_passes.count("CombineParallelBatchMatmul"))
+    pass_seqs.push_back(transform::CombineParallelBatchMatmul(3));
+  if (!deny_passes.count("FoldConstant"))
+    pass_seqs.push_back(transform::FoldConstant());
+  if (!deny_passes.count("FoldScaleAxis"))
+    pass_seqs.push_back(transform::FoldScaleAxis());
+  if (!deny_passes.count("SimplifyExpr"))
+    pass_seqs.push_back(transform::SimplifyExpr());
+  if (!deny_passes.count("CanonicalizeCast"))
+    pass_seqs.push_back(transform::CanonicalizeCast());
+  if (!deny_passes.count("CanonicalizeOps"))
+    pass_seqs.push_back(transform::CanonicalizeOps());
+  if (!deny_passes.count("FlattenAtrousConv"))
+    pass_seqs.push_back(transform::FlattenAtrousConv());
 
   // Alter layout transformation is currently only applied to homogeneous execution.
   if (is_homogeneous) {
     if (!is_vm) {
-      pass_seqs.push_back(transform::InferType());
+      if (!deny_passes.count("InferType"))
+        pass_seqs.push_back(transform::InferType());
     }
-    pass_seqs.push_back(transform::AlterOpLayout());
   }
 
+  if (!deny_passes.count("AlterOpLayout"))
+    pass_seqs.push_back(transform::AlterOpLayout());
+
   // Fast math optimizations.
-  pass_seqs.push_back(transform::FastMath());
-  pass_seqs.push_back(transform::FoldConstant());
+  if (!deny_passes.count("FastMath"))
+    pass_seqs.push_back(transform::FastMath());
+  if (!deny_passes.count("FoldConstant"))
+    pass_seqs.push_back(transform::FoldConstant());
 
   return pass_seqs;
 }
@@ -358,6 +386,16 @@ void BindParamsInModule(IRModule mod, Map<String, runtime::NDArray> params) {
     params_tmp[kv.first] = kv.second;
   }
   BindParamsInModule(mod, params_tmp);
+}
+
+std::unordered_set<std::string> StringSplit(const std::string& str,
+                                            const std::string& delim) {
+  std::regex reg(delim);
+  std::unordered_set<std::string> elems{
+      std::sregex_token_iterator(str.begin(), str.end(), reg, -1),
+      std::sregex_token_iterator()};
+  elems.erase("");
+  return elems;
 }
 
 }  // namespace backend

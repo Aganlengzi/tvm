@@ -158,6 +158,7 @@ class BuildModule(object):
 
         mod_name = mangle_module_name(mod_name)
 
+        deny_pass_names = "FuseOps;PlanDevices"
         self._build(
             mod,
             target,
@@ -167,6 +168,7 @@ class BuildModule(object):
             workspace_memory_pools,
             constant_memory_pools,
             mod_name,
+            deny_pass_names,
         )
         autotvm.GLOBAL_SCOPE.silent = old_autotvm_silent
 

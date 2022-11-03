@@ -44,6 +44,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <regex>
 
 #include "../../runtime/meta_data.h"
 #include "../../target/metadata.h"
@@ -560,7 +561,7 @@ inline bool IsMetaScheduleEnabled() {
  * \param is_vm True if passes are to be used for the vm executor.
  * \return An array of passes.
  */
-Array<Pass> GetPassPrefix(bool is_homogeneous, bool is_vm);
+Array<Pass> GetPassPrefix(bool is_homogeneous, bool is_vm, const String& deny_pass_names);
 
 /*! \brief Target hash function */
 struct TargetStrHash {
@@ -633,6 +634,14 @@ void UpdateAutoSchedulerOpWeights(const IRModule& module);
  * \return std::vector<int64_t>
  */
 std::vector<int64_t> ShapeToJSON(tvm::Array<IndexExpr> shape);
+
+/*!
+ * \brief Split a string with kDelim
+ *
+ * \param shape
+ * \return std::unordered_set<std::string> 
+ */
+std::unordered_set<std::string> StringSplit(const std::string& str, const std::string& delim);
 
 }  // namespace backend
 }  // namespace relay

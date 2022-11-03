@@ -192,8 +192,8 @@ class RelayBuildModule : public runtime::ModuleNode {
           [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { *rv = this->GetModule(); });
     } else if (name == "build") {
       return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-        ICHECK_EQ(args.num_args, 8);
-        this->Build(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
+        ICHECK_EQ(args.num_args, 9);
+        this->Build(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]);
       });
     } else if (name == "list_params") {
       return PackedFunc(
@@ -306,7 +306,8 @@ class RelayBuildModule : public runtime::ModuleNode {
   void Build(IRModule mod, const Array<Target>& raw_targets, const tvm::Target& target_host,
              const Executor& executor, const Runtime& runtime,
              const WorkspaceMemoryPools& workspace_memory_pools,
-             const ConstantMemoryPools& constant_memory_pools, const String mod_name) {
+             const ConstantMemoryPools& constant_memory_pools,
+             const String mod_name, const String deny_pass_names) {
     VLOG_CONTEXT << "Build";
     executor_ = executor;
     runtime_ = runtime;
@@ -314,7 +315,7 @@ class RelayBuildModule : public runtime::ModuleNode {
     constant_memory_pools_ = constant_memory_pools;
     config_ = CompilationConfig(PassContext::Current(), raw_targets);
     VLOG(1) << "Using compilation config:" << std::endl << config_;
-    BuildRelay(std::move(mod), mod_name);
+    BuildRelay(std::move(mod), mod_name, deny_pass_names);
   }
 
  protected:
@@ -330,30 +331,45 @@ class RelayBuildModule : public runtime::ModuleNode {
     VLOG_CONTEXT << "Optimize";
     config_ = CompilationConfig(PassContext ::Current(), raw_targets);
     VLOG(1) << "Using compilation config:" << std::endl << config_;
-    return OptimizeImpl(std::move(relay_module));
+    return OptimizeImpl(std::move(relay_module), "");
   }
 
-  IRModule OptimizeImpl(IRModule relay_module) {
+  IRModule OptimizeImpl(IRModule relay_module, const String& deny_pass_names) {
     ICHECK(relay_module.defined()) << "The IRModule must be defined for the Relay compiler.";
+
+    std::string pass_names_str = deny_pass_names.operator std::string();
+    auto deny_passes = StringSplit(pass_names_str, ";");
 
     backend::BindParamsInModule(relay_module, params_);
 
     Array<Pass> pass_seqs =
-        GetPassPrefix(/*is_homogenous=*/config_->primitive_targets.size() == 1, /*is_vm=*/false);
+        GetPassPrefix(/*is_homogenous=*/config_->primitive_targets.size() == 1, /*is_vm=*/false, deny_pass_names);
     transform::PassContext pass_ctx = PassContext::Current();
 
     if (config_->optional_homogeneous_target.defined()) {
       // This pass currently only supports the homogeneous case.
-      pass_seqs.push_back(transform::SplitArgs(
+      if (!deny_passes.count("SplitArgs")) {
+        pass_seqs.push_back(transform::SplitArgs(
           config_->optional_homogeneous_target->GetAttr<Integer>("max_function_args", -1).value()));
+      }
     }
 
     // Always plan devices so the remaining passes don't need to distinguish homogeneous vs
     // hetrogenous execution.
-    pass_seqs.push_back(transform::PlanDevices(config_));
+    if (!deny_passes.count("PlanDevices")) {
+      pass_seqs.push_back(transform::PlanDevices(config_));
+    }
 
     // Fuse the operations if it is needed.
-    pass_seqs.push_back(transform::FuseOps());
+    if (!deny_passes.count("FuseOps")) {
+      pass_seqs.push_back(transform::FuseOps());
+    }
+
+    LOG(INFO) << "XXXXXXXX: pass==== ";
+    for (const Pass& pass : pass_seqs) {
+        const PassInfo& pass_info = pass->Info();
+        LOG(INFO) << "XXXXXXXX: pass " << pass_info->name;
+    }
 
     // Create a sequential pass and perform optimizations.
     transform::Pass seq = transform::Sequential(pass_seqs);
@@ -394,7 +410,9 @@ class RelayBuildModule : public runtime::ModuleNode {
       }
     }
 
-    relay_module = transform::InferType()(relay_module);
+    if (!deny_passes.count("InferType")) {
+      relay_module = transform::InferType()(relay_module);
+    }
 
     // Inline the functions that have been lifted by the module scope.
     //
@@ -402,9 +420,15 @@ class RelayBuildModule : public runtime::ModuleNode {
     // global function calls. We should make sure that these callees are also
     // inline functions. However, this should be very unlikely for accelerators
     // and vendor-provided libraries. So we don't handle for now.
-    relay_module = transform::Inline()(relay_module);
-    relay_module = transform::InferType()(relay_module);
-    relay_module = transform::LabelOps()(relay_module);
+    if (!deny_passes.count("Inline")) {
+      relay_module = transform::Inline()(relay_module);
+    }
+    if (!deny_passes.count("InferType")) {
+      relay_module = transform::InferType()(relay_module);
+    }
+    if (!deny_passes.count("LabelOps")) {
+      relay_module = transform::LabelOps()(relay_module);
+    }
 
     ICHECK(relay_module.defined());
 
@@ -417,11 +441,11 @@ class RelayBuildModule : public runtime::ModuleNode {
    * \param relay_module The Relay IR module.
    * \param params The parameters.
    */
-  void BuildRelay(IRModule relay_module, const String& mod_name) {
+  void BuildRelay(IRModule relay_module, const String& mod_name, const String& deny_pass_names) {
     // Relay IRModule -> IRModule optimizations.
     IRModule module = WithAttrs(
         relay_module, {{tvm::attr::kExecutor, executor_}, {tvm::attr::kRuntime, runtime_}});
-    relay_module = OptimizeImpl(std::move(module));
+    relay_module = OptimizeImpl(std::move(module), deny_pass_names);
 
     // Get the updated function and new IRModule to build.
     // Instead of recreating the IRModule, we should look at the differences between this and the
