@@ -82,6 +82,7 @@ class BuildModule(object):
         constant_memory_pools=None,
         params=None,
         mod_name=None,
+        deny_pass_names="",
     ):
         """
         Parameters
@@ -158,7 +159,6 @@ class BuildModule(object):
 
         mod_name = mangle_module_name(mod_name)
 
-        deny_pass_names = "FuseOps;PlanDevices"
         self._build(
             mod,
             target,
@@ -262,9 +262,9 @@ def _module_export(module, file_name):  # fcompile, addons, kwargs?
 
 
 @register_func("tvm.relay.build")
-def _build_module_no_factory_impl(mod, target, target_host, params, mod_name):
+def _build_module_no_factory_impl(mod, target, target_host, params, mod_name, deny_pass_names):
     return build(
-        mod, target=target, target_host=target_host, params=params, mod_name=mod_name
+        mod, target=target, target_host=target_host, params=params, mod_name=mod_name, deny_pass_names=deny_pass_names
     ).module
 
 
@@ -349,6 +349,7 @@ def build(
     constant_memory_pools=None,
     params=None,
     mod_name="default",
+    deny_pass_names="",
 ):
     # fmt: off
     # pylint: disable=line-too-long
@@ -446,6 +447,7 @@ def build(
             workspace_memory_pools=workspace_memory_pools,
             constant_memory_pools=constant_memory_pools,
             mod_name=mod_name,
+            deny_pass_names=deny_pass_names,
         )
         func_metadata = bld_mod.get_function_metadata()
         devices = bld_mod.get_devices()
